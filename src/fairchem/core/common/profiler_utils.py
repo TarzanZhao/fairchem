@@ -80,6 +80,8 @@ class ProfilerCallback(Callback):
         active_steps: int = 2,
         all_ranks: bool = False,
         activities: tuple = (ProfilerActivity.CPU, ProfilerActivity.CUDA),
+        profile_memory: bool = False,
+        record_shapes: bool = False,
     ) -> None:
         profile_dir = os.path.join(job_config.metadata.log_dir, "profiles")
         os.makedirs(profile_dir, exist_ok=True)
@@ -98,7 +100,11 @@ class ProfilerCallback(Callback):
             wait_steps, warmup_steps, active_steps
         )
         self.profiler = profile(
-            activities=activities, schedule=schedule, on_trace_ready=handler
+            activities=activities,
+            schedule=schedule,
+            on_trace_ready=handler,
+            profile_memory=profile_memory,
+            record_shapes=record_shapes,
         )
 
     def on_train_start(self, state: State, unit: TTrainUnit) -> None:
