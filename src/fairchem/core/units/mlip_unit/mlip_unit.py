@@ -256,6 +256,44 @@ def get_output_masks(
     return output_masks
 
 
+def _flatten_tensors(obj, prefix: str = "") -> dict[str, torch.Tensor]:
+    """
+    Flatten a nested dict of tensors into {dotted.key: cpu float tensor}.
+    """
+    out: dict[str, torch.Tensor] = {}
+    if isinstance(obj, torch.Tensor):
+        out[prefix] = obj.detach().float().cpu()
+    elif isinstance(obj, dict):
+        for k, v in obj.items():
+            out.update(_flatten_tensors(v, f"{prefix}.{k}" if prefix else str(k)))
+    return out
+
+
+def _save_step_probe(path, step, scalar_loss, loss_dict, pred, batch) -> None:
+    """
+    Save loss, per-task losses, model outputs and batch shapes for one step.
+    """
+    shapes = {}
+    for key in ("pos", "atomic_numbers", "natoms", "edge_index", "cell", "batch"):
+        if key in batch:
+            shapes[key] = (tuple(batch[key].shape), str(batch[key].dtype))
+    shapes["natoms_list"] = batch.natoms.tolist()
+    if "nedges" in batch:
+        shapes["nedges_list"] = batch.nedges.tolist()
+    if hasattr(batch, "dataset"):
+        shapes["dataset"] = list(batch.dataset)
+    torch.save(
+        {
+            "step": step,
+            "loss": scalar_loss.detach().float().cpu(),
+            "loss_dict": _flatten_tensors(loss_dict),
+            "pred": _flatten_tensors(pred),
+            "shapes": shapes,
+        },
+        path,
+    )
+
+
 def compute_loss(
     tasks: Sequence[Task], predictions: dict[str, torch.Tensor], batch: AtomicData
 ) -> dict[str, float]:
@@ -772,6 +810,21 @@ class MLIPTrainEvalUnit(
                             f.write(
                                 f"Grad,{step},{name},{param.grad.abs().mean().item()}\n"
                             )
+                # Correctness probe: the raw outputs and batch shapes of the
+                # first few steps, next to the checksums, for element-wise
+                # comparison across code changes.
+                if step < int(os.environ.get("FC_PROBE_STEPS", "10")):
+                    _save_step_probe(
+                        os.path.join(
+                            self.debug_checksums_save_path,
+                            f"ddp{ddp_size}.{ddp_rank}_gp{gp_size}.{gp_rank}_step{step}.pt",
+                        ),
+                        step,
+                        scalar_loss,
+                        loss_dict,
+                        pred,
+                        batch_on_device,
+                    )
 
             if self.clip_grad_norm is not None:
                 if self.train_strategy == TrainStrategy.FSDP:
